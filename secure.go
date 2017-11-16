@@ -1,112 +1,153 @@
+// Package secure is an HTTP middleware for Go that handles adding security
+// headers to HTTP responses, and accompanying security checks.
+//
+//    package main
+//
+//    import (
+//        "net/http"
+//
+//        "github.com/kenshaw/secure"
+//    )
+//
+//    var myHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+//        w.Write([]byte("hello world"))
+//    })
+//
+//    func main() {
+//        secureMiddleware := secure.New(
+//            secure.AllowedHosts("www.example.com", "sub.example.com"),
+//            secure.SSLRedirect(true),
+//        })
+//
+//        app := secureMiddleware.Handler(myHandler)
+//        http.ListenAndServe("127.0.0.1:3000", app)
+//    }
 package secure
 
+//go:generate go run gen-readme.go > README.md
+
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 )
 
-const (
-	stsHeader            = "Strict-Transport-Security"
-	stsSubdomainString   = "; includeSubdomains"
-	stsPreloadString     = "; preload"
-	frameOptionsHeader   = "X-Frame-Options"
-	frameOptionsValue    = "DENY"
-	contentTypeHeader    = "X-Content-Type-Options"
-	contentTypeValue     = "nosniff"
-	xssProtectionHeader  = "X-XSS-Protection"
-	xssProtectionValue   = "1; mode=block"
-	cspHeader            = "Content-Security-Policy"
-	hpkpHeader           = "Public-Key-Pins"
-	referrerPolicyHeader = "Referrer-Policy"
-)
-
-func defaultBadHostHandler(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "Bad Host", http.StatusInternalServerError)
-}
-
-// Options is a struct for specifying configuration options for the secure.Secure middleware.
-type Options struct {
-	// AllowedHosts is a list of fully qualified domain names that are allowed. Default is empty list, which allows any and all host names.
+// Middleware that sets basic security headers and provides simple security
+// checks for http servers.
+type Middleware struct {
+	// AllowedHosts is a list of fully qualified domain names that are allowed.
+	// When empty, allows any host.
 	AllowedHosts []string
-	// HostsProxyHeaders is a set of header keys that may hold a proxied hostname value for the request.
+
+	// HostsProxyHeaders is a set of header keys that may hold a proxied
+	// hostname value for the request.
 	HostsProxyHeaders []string
-	// If SSLRedirect is set to true, then only allow https requests. Default is false.
+
+	// If SSLRedirect is set to true, then only allow https requests.
 	SSLRedirect bool
-	// If SSLTemporaryRedirect is true, the a 302 will be used while redirecting. Default is false (301).
+
+	// If SSLTemporaryRedirect is true, the a 302 will be used while
+	// redirecting.
 	SSLTemporaryRedirect bool
-	// SSLHost is the host name that is used to redirect http requests to https. Default is "", which indicates to use the same host.
+
+	// SSLHost is the host name that is used to redirect http requests to
+	// https. If not set, indicates to use the same host.
 	SSLHost string
-	// SSLProxyHeaders is set of header keys with associated values that would indicate a valid https request. Useful when using Nginx: `map[string]string{"X-Forwarded-Proto": "https"}`. Default is blank map.
-	SSLProxyHeaders map[string]string
-	// STSSeconds is the max-age of the Strict-Transport-Security header. Default is 0, which would NOT include the header.
+
+	// SSLForwardedProxyHeaders is the set of header keys with associated
+	// values that would indicate a valid https request. This is used when
+	// proxying requests from behind another webserver (ie, nginx, apache,
+	// etc).
+	//
+	//     &secure.Middleware{
+	//         SSLForwardedProxyHeaders: map[string]string{
+	//             "X-Forwarded-Proto": "https",
+	//         },
+	//     }
+	//
+	SSLForwardedProxyHeaders map[string]string
+
+	// STSSeconds is the max-age of the Strict-Transport-Security header.
+	// Header will not be included if STSSeconds = 0.
 	STSSeconds int64
-	// If STSIncludeSubdomains is set to true, the `includeSubdomains` will be appended to the Strict-Transport-Security header. Default is false.
+
+	// When STSIncludeSubdomains is true, `includeSubdomains` will be appended to
+	// the Strict-Transport-Security header.
 	STSIncludeSubdomains bool
-	// If STSPreload is set to true, the `preload` flag will be appended to the Strict-Transport-Security header. Default is false.
+
+	// When STSPreload is true, the `preload` flag will be appended to the
+	// Strict-Transport-Security header.
 	STSPreload bool
-	// If ForceSTSHeader is set to true, the STS header will be added even when the connection is HTTP. Default is false.
+
+	// When ForceSTSHeader is true, the STS header will be added even when the
+	// connection is HTTP.
 	ForceSTSHeader bool
-	// If FrameDeny is set to true, adds the X-Frame-Options header with the value of `DENY`. Default is false.
+
+	// When FrameDeny is true, adds the X-Frame-Options header with the value
+	// of `DENY`.
 	FrameDeny bool
-	// CustomFrameOptionsValue allows the X-Frame-Options header value to be set with a custom value. This overrides the FrameDeny option. Default is "".
+
+	// CustomFrameOptionsValue allows the X-Frame-Options header value to be
+	// set with a custom value. Overrides the FrameDeny option.
 	CustomFrameOptionsValue string
-	// If ContentTypeNosniff is true, adds the X-Content-Type-Options header with the value `nosniff`. Default is false.
+
+	// If ContentTypeNosniff is true, adds the X-Content-Type-Options header
+	// with the value `nosniff`.
 	ContentTypeNosniff bool
-	// If BrowserXssFilter is true, adds the X-XSS-Protection header with the value `1; mode=block`. Default is false.
-	BrowserXssFilter bool
-	// CustomBrowserXssValue allows the X-XSS-Protection header value to be set with a custom value. This overrides the BrowserXssFilter option. Default is "".
-	CustomBrowserXssValue string
-	// ContentSecurityPolicy allows the Content-Security-Policy header value to be set with a custom value. Default is "".
+
+	// If BrowserXSSFilter is true, adds the X-XSS-Protection header with the
+	// value `1; mode=block`.
+	BrowserXSSFilter bool
+
+	// CustomBrowserXSSValue allows the X-XSS-Protection header value to be set
+	// with a custom value. This overrides the BrowserXSSFilter option.
+	CustomBrowserXSSValue string
+
+	// ContentSecurityPolicy allows the Content-Security-Policy header value to
+	// be set with a custom value.
 	ContentSecurityPolicy string
-	// PublicKey implements HPKP to prevent MITM attacks with forged certificates. Default is "".
-	PublicKey string
-	// Referrer Policy allows sites to control when browsers will pass the Referer header to other sites. Default is "".
+
+	// ReferrerPolicy configures which the browser referrer policy.
 	ReferrerPolicy string
-	// When developing, the AllowedHosts, SSL, and STS options can cause some unwanted effects. Usually testing happens on http, not https, and on localhost, not your production domain... so set this to true for dev environment.
-	// If you would like your development environment to mimic production with complete Host blocking, SSL redirects, and STS headers, leave this as false. Default if false.
-	IsDevelopment bool
+
+	// BadHostHandler is the bad host handler.
+	BadHostHandler http.HandlerFunc
+
+	// When DevEnvironment is true, disables the AllowedHosts, SSL, and STS
+	// checks.
+	//
+	// This should be toggled only when testing / developing, and is necessary
+	// when testing sites configured only for https from a http based
+	// connection.
+	//
+	// If you would like your development environment to mimic production with
+	// complete Host blocking, SSL redirects, and STS headers, leave this as
+	// false.
+	DevEnvironment bool
 }
 
-// Secure is a middleware that helps setup a few basic security features. A single secure.Options struct can be
-// provided to configure which features should be enabled, and the ability to override a few of the default values.
-type Secure struct {
-	// Customize Secure with an Options struct.
-	opt Options
-
-	// Handlers for when an error occurs (ie bad host).
-	badHostHandler http.Handler
-}
-
-// New constructs a new Secure instance with supplied options.
-func New(options ...Options) *Secure {
-	var o Options
-	if len(options) == 0 {
-		o = Options{}
-	} else {
-		o = options[0]
+// New constructs a new secure Middleware instance with the supplied options.
+func New(opts ...Option) *Middleware {
+	s := &Middleware{
+		BadHostHandler: DefaultBadHostHandler,
 	}
 
-	return &Secure{
-		opt:            o,
-		badHostHandler: http.HandlerFunc(defaultBadHostHandler),
+	// apply opts
+	for _, o := range opts {
+		o(s)
 	}
+
+	return s
 }
 
-// SetBadHostHandler sets the handler to call when secure rejects the host name.
-func (s *Secure) SetBadHostHandler(handler http.Handler) {
-	s.badHostHandler = handler
-}
-
-// Handler implements the http.HandlerFunc for integration with the standard net/http lib.
-func (s *Secure) Handler(h http.Handler) http.Handler {
+// Handler implements the http.HandlerFunc for integration with the standard
+// net/http lib.
+func (s *Middleware) Handler(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Let secure process the request. If it returns an error,
-		// that indicates the request should not continue.
-		err := s.Process(w, r)
-
-		// If there was an error, do not continue.
-		if err != nil {
+		// process the request. if an error is returned, then bail (ie, request
+		// should not continue down handler chain)
+		if err := s.Process(w, r); err != nil {
 			return
 		}
 
@@ -114,8 +155,9 @@ func (s *Secure) Handler(h http.Handler) http.Handler {
 	})
 }
 
-// HandlerFuncWithNext is a special implementation for Negroni, but could be used elsewhere.
-func (s *Secure) HandlerFuncWithNext(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+// HandlerFuncWithNext is a special implementation for Negroni, but could be
+// used elsewhere.
+func (s *Middleware) HandlerFuncWithNext(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	err := s.Process(w, r)
 
 	// If there was an error, do not call next.
@@ -124,21 +166,22 @@ func (s *Secure) HandlerFuncWithNext(w http.ResponseWriter, r *http.Request, nex
 	}
 }
 
-// Process runs the actual checks and returns an error if the middleware chain should stop.
-func (s *Secure) Process(w http.ResponseWriter, r *http.Request) error {
-	// Resolve the host for the request, using proxy headers if present.
+// Process runs the actual checks and returns an error if the middleware chain
+// should stop.
+func (s *Middleware) Process(w http.ResponseWriter, r *http.Request) error {
+	// resolve the host for the request, using proxy headers if present
 	host := r.Host
-	for _, header := range s.opt.HostsProxyHeaders {
+	for _, header := range s.HostsProxyHeaders {
 		if h := r.Header.Get(header); h != "" {
 			host = h
 			break
 		}
 	}
 
-	// Allowed hosts check.
-	if len(s.opt.AllowedHosts) > 0 && !s.opt.IsDevelopment {
+	// allowed hosts check
+	if len(s.AllowedHosts) > 0 && !s.DevEnvironment {
 		isGoodHost := false
-		for _, allowedHost := range s.opt.AllowedHosts {
+		for _, allowedHost := range s.AllowedHosts {
 			if strings.EqualFold(allowedHost, host) {
 				isGoodHost = true
 				break
@@ -146,15 +189,19 @@ func (s *Secure) Process(w http.ResponseWriter, r *http.Request) error {
 		}
 
 		if !isGoodHost {
-			s.badHostHandler.ServeHTTP(w, r)
-			return fmt.Errorf("Bad host name: %s", host)
+			if s.BadHostHandler != nil {
+				s.BadHostHandler(w, r)
+			} else {
+				DefaultBadHostHandler(w, r)
+			}
+			return errors.New("bad host")
 		}
 	}
 
-	// Determine if we are on HTTPS.
-	isSSL := strings.EqualFold(r.URL.Scheme, "https") || r.TLS != nil
+	// determine if we are on https
+	isSSL := r.URL.Scheme == "https" || r.TLS != nil
 	if !isSSL {
-		for k, v := range s.opt.SSLProxyHeaders {
+		for k, v := range s.SSLForwardedProxyHeaders {
 			if r.Header.Get(k) == v {
 				isSSL = true
 				break
@@ -162,73 +209,75 @@ func (s *Secure) Process(w http.ResponseWriter, r *http.Request) error {
 		}
 	}
 
-	// SSL check.
-	if s.opt.SSLRedirect && !isSSL && !s.opt.IsDevelopment {
+	// ssl check
+	if s.SSLRedirect && !isSSL && !s.DevEnvironment {
 		url := r.URL
 		url.Scheme = "https"
 		url.Host = host
 
-		if len(s.opt.SSLHost) > 0 {
-			url.Host = s.opt.SSLHost
+		if len(s.SSLHost) > 0 {
+			url.Host = s.SSLHost
 		}
 
 		status := http.StatusMovedPermanently
-		if s.opt.SSLTemporaryRedirect {
+		if s.SSLTemporaryRedirect {
 			status = http.StatusTemporaryRedirect
 		}
 
 		http.Redirect(w, r, url.String(), status)
-		return fmt.Errorf("Redirecting to HTTPS")
+		return fmt.Errorf("https redirect")
 	}
 
-	// Strict Transport Security header. Only add header when we know it's an SSL connection.
-	// See https://tools.ietf.org/html/rfc6797#section-7.2 for details.
-	if s.opt.STSSeconds != 0 && (isSSL || s.opt.ForceSTSHeader) && !s.opt.IsDevelopment {
+	// only add Strict-Transport-Security header when we know it's an ssl
+	// connection
+	//
+	// see: https://tools.ietf.org/html/rfc6797#section-7.2
+	if s.STSSeconds != 0 && (isSSL || s.ForceSTSHeader) && !s.DevEnvironment {
 		stsSub := ""
-		if s.opt.STSIncludeSubdomains {
-			stsSub = stsSubdomainString
+		if s.STSIncludeSubdomains {
+			stsSub = "; includeSubdomains"
 		}
 
-		if s.opt.STSPreload {
-			stsSub += stsPreloadString
+		if s.STSPreload {
+			stsSub += "; preload"
 		}
 
-		w.Header().Add(stsHeader, fmt.Sprintf("max-age=%d%s", s.opt.STSSeconds, stsSub))
+		w.Header().Add("Strict-Transport-Security", fmt.Sprintf("max-age=%d%s", s.STSSeconds, stsSub))
 	}
 
-	// Frame Options header.
-	if len(s.opt.CustomFrameOptionsValue) > 0 {
-		w.Header().Add(frameOptionsHeader, s.opt.CustomFrameOptionsValue)
-	} else if s.opt.FrameDeny {
-		w.Header().Add(frameOptionsHeader, frameOptionsValue)
+	// frame options
+	if len(s.CustomFrameOptionsValue) > 0 {
+		w.Header().Add("X-Frame-Options", s.CustomFrameOptionsValue)
+	} else if s.FrameDeny {
+		w.Header().Add("X-Frame-Options", "DENY")
 	}
 
-	// Content Type Options header.
-	if s.opt.ContentTypeNosniff {
-		w.Header().Add(contentTypeHeader, contentTypeValue)
+	// content type options
+	if s.ContentTypeNosniff {
+		w.Header().Add("X-Content-Type-Options", "nosniff")
 	}
 
-	// XSS Protection header.
-	if len(s.opt.CustomBrowserXssValue) > 0 {
-		w.Header().Add(xssProtectionHeader, s.opt.CustomBrowserXssValue)
-	} else if s.opt.BrowserXssFilter {
-		w.Header().Add(xssProtectionHeader, xssProtectionValue)
+	// xss protection
+	if len(s.CustomBrowserXSSValue) > 0 {
+		w.Header().Add("X-XSS-Protection", s.CustomBrowserXSSValue)
+	} else if s.BrowserXSSFilter {
+		w.Header().Add("X-XSS-Protection", "1; mode=block")
 	}
 
-	// HPKP header.
-	if len(s.opt.PublicKey) > 0 && isSSL && !s.opt.IsDevelopment {
-		w.Header().Add(hpkpHeader, s.opt.PublicKey)
+	// content security policy
+	if len(s.ContentSecurityPolicy) > 0 {
+		w.Header().Add("Content-Security-Policy", s.ContentSecurityPolicy)
 	}
 
-	// Content Security Policy header.
-	if len(s.opt.ContentSecurityPolicy) > 0 {
-		w.Header().Add(cspHeader, s.opt.ContentSecurityPolicy)
-	}
-
-	// Referrer Policy header.
-	if len(s.opt.ReferrerPolicy) > 0 {
-		w.Header().Add(referrerPolicyHeader, s.opt.ReferrerPolicy)
+	// referrer policy
+	if len(s.ReferrerPolicy) > 0 {
+		w.Header().Add("Referrer-Policy", s.ReferrerPolicy)
 	}
 
 	return nil
+}
+
+// DefaultBadHostHandler is the default bad host http handler.
+func DefaultBadHostHandler(w http.ResponseWriter, r *http.Request) {
+	http.Error(w, "bad host", http.StatusInternalServerError)
 }
