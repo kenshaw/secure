@@ -113,10 +113,9 @@ func main() {
 	secureMiddleware := &secure.Middleware{
 		SSLRedirect: true,
 
-		// This is optional in production. The default behavior is to just
-		// redirect the request to the HTTPS protocol. Example:
-		// http://github.com/some_page would be redirected to
-		// https://github.com/some_page.
+		// this is optional in production. the default behavior is to just
+		// redirect the request to the https protocol. example:
+		// http://github.com/some_page would be redirected to https://github.com/some_page
 		SSLHost: "localhost:8443",
 	}
 
@@ -128,7 +127,7 @@ func main() {
 	}()
 
 	// HTTPS
-	// To generate a development cert and key, run the following from your *nix terminal:
+	// to generate a development cert and key, run the following from your *nix terminal:
 	// go run $GOROOT/src/crypto/tls/generate_cert.go --host="localhost"
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", app))
 }
@@ -232,13 +231,13 @@ func main() {
 		return func(c *gin.Context) {
 			err := secureMiddleware.Process(c.Writer, c.Request)
 
-			// If there was an error, do not continue.
+			// if there was an error, do not continue
 			if err != nil {
 				c.Abort()
 				return
 			}
 
-			// Avoid header rewrite if response is a redirection.
+			// avoid header rewrite if response is a redirection
 			if status := c.Writer.Status(); status > 300 && status < 399 {
 				c.Abort()
 			}
@@ -298,10 +297,11 @@ func main() {
 		FrameDeny: true,
 	}
 
-	iris.UseFunc(func(c *iris.Context) {
-		err := secureMiddleware.Process(c.ResponseWriter, c.Request)
+	app := iris.New()
+	app.Use(func(c iris.Context) {
+		err := secureMiddleware.Process(c.ResponseWriter(), c.Request())
 
-		// If there was an error, do not continue.
+		// if there was an error, do not continue
 		if err != nil {
 			return
 		}
@@ -309,11 +309,12 @@ func main() {
 		c.Next()
 	})
 
-	iris.Get("/home", func(c *iris.Context) {
-		c.SendStatus(200, "X-Frame-Options header is now `DENY`.")
+	app.Get("/home", func(c iris.Context) {
+		c.StatusCode(200)
+		c.WriteString("X-Frame-Options header is now `DENY`.")
 	})
 
-	iris.Listen(":8080")
+	app.Run(iris.Addr(":8080"))
 }
 ```
 

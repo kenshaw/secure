@@ -11,10 +11,11 @@ func main() {
 		FrameDeny: true,
 	}
 
-	iris.UseFunc(func(c *iris.Context) {
-		err := secureMiddleware.Process(c.ResponseWriter, c.Request)
+	app := iris.New()
+	app.Use(func(c iris.Context) {
+		err := secureMiddleware.Process(c.ResponseWriter(), c.Request())
 
-		// If there was an error, do not continue.
+		// if there was an error, do not continue
 		if err != nil {
 			return
 		}
@@ -22,9 +23,10 @@ func main() {
 		c.Next()
 	})
 
-	iris.Get("/home", func(c *iris.Context) {
-		c.SendStatus(200, "X-Frame-Options header is now `DENY`.")
+	app.Get("/home", func(c iris.Context) {
+		c.StatusCode(200)
+		c.WriteString("X-Frame-Options header is now `DENY`.")
 	})
 
-	iris.Listen(":8080")
+	app.Run(iris.Addr(":8080"))
 }

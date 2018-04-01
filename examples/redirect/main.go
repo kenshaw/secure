@@ -16,10 +16,9 @@ func main() {
 	secureMiddleware := &secure.Middleware{
 		SSLRedirect: true,
 
-		// This is optional in production. The default behavior is to just
-		// redirect the request to the HTTPS protocol. Example:
-		// http://github.com/some_page would be redirected to
-		// https://github.com/some_page.
+		// this is optional in production. the default behavior is to just
+		// redirect the request to the https protocol. example:
+		// http://github.com/some_page would be redirected to https://github.com/some_page
 		SSLHost: "localhost:8443",
 	}
 
@@ -31,7 +30,7 @@ func main() {
 	}()
 
 	// HTTPS
-	// To generate a development cert and key, run the following from your *nix terminal:
+	// to generate a development cert and key, run the following from your *nix terminal:
 	// go run $GOROOT/src/crypto/tls/generate_cert.go --host="localhost"
 	log.Fatal(http.ListenAndServeTLS(":8443", "cert.pem", "key.pem", app))
 }
